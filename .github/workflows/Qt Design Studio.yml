@@ -1,0 +1,68 @@
+name: 🎨 Clone Qt Design Studio Documentation
+
+on:
+  workflow_dispatch:  # 手动触发（强烈建议首次测试用）
+  # schedule:
+  #   - cron: '0 3 * * 1'  # 每周一凌晨3点（确认合规后再启用）
+
+jobs:
+  clone-design-studio:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    env:
+      TARGET_URL: "https://doc.qt.io/qtdesignstudio/"  # ✅ 精确指向 Design Studio 文档根目录
+      DOWNLOAD_DIR: "qtdesignstudio-docs"
+    
+    steps:
+      - name: 🛠️ Setup Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget zstd
+          mkdir -p $DOWNLOAD_DIR
+
+      - name: 🌐 Download with Precision Filtering
+        run: |
+          wget \
+            --recursive \
+            --no-clobber \
+            --page-requisites \
+            --convert-links \
+            --html-extension \
+            --restrict-file-names=ascii \
+            --domains doc.qt.io \
+            --no-parent \
+            --wait=0.7 \
+            --random-wait \
+            --timeout=25 \
+            --tries=3 \
+            --user-agent="Mozilla/5.0 (compatible; QtDocsBot/1.0; +https://github.com/YOUR-USERNAME/qt-docs-mirror)" \
+            # ✅ 关键增强：保留 Design Studio 特有资源
+            --accept-regex '\.(html?|css|js|qml|qmlproject|json|xml|md|txt|svg|png|jpg|jpeg|gif|ico|woff2?|ttf|otf)$' \
+            --reject-regex '\.(mp[34]|avi|mov|wmv|flv|webm|wav|ogg|zip|rar|tar|gz|bz2|xz|7z|iso|dmg|exe|msi|apk|bin|deb|rpm|pdf|psd|ai|sketch)$' \
+            --directory-prefix=$DOWNLOAD_DIR \
+            $TARGET_URL
+        continue-on-error: true
+
+      - name: 🧹 Post-Download Cleanup
+        run: |
+          # 清理带查询参数的临时文件（避免Windows解压失败）
+          find $DOWNLOAD_DIR -type f -name "*\?*" -delete 2>/dev/null || true
+          # 删除空目录（wget可能创建）
+          find $DOWNLOAD_DIR -type d -empty -delete 2>/dev/null || true
+
+      - name: 📦 Compress with Zstandard
+        run: zstd -T0 --long -19 -k -f -o qtdesignstudio-docs.zst $DOWNLOAD_DIR
+
+      - name: 📤 Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qtdesignstudio-offline-docs
+          path: qtdesignstudio-docs.zst
+          retention-days: 14
+          compression-level: 0
+
+      - name: 🗑️ Final Cleanup
+        run: rm -rf $DOWNLOAD_DIR qtdesignstudio-docs.zst
+        if: always()
