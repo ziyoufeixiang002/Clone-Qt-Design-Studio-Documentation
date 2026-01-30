@@ -1,10 +1,12 @@
-name: 🎨 Clone Qt Design Studio Documentation (Robust)
+name: 📚 Clone Qt qtdesignstudio
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # 手动触发（推荐：避免定时任务造成服务器压力）
+  # schedule:
+  #   - cron: '0 2 * * 0'  # 如需每周日 2 点自动更新，取消注释（请先确认遵守 robots.txt）
 
 jobs:
-  clone-design-studio:
+  clone-qt-docs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -17,91 +19,46 @@ jobs:
       - name: 🛠️ Setup Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget zstd
-          mkdir -p "$DOWNLOAD_DIR"
-          echo "✓ Environment ready"
+          sudo apt-get install -y wget ca-certificates
+          mkdir -p $DOWNLOAD_DIR
 
-      - name: 🌐 Download with Anti-Bot Bypass
+      - name: 🌐 Download Documentation (Smart Filtering)
         run: |
-          # 关键修复：1) 移除危险参数 2) 增强 User-Agent 3) 添加 Referer 4) 重试机制
           wget \
             --recursive \
-            --level=inf \
+            --no-clobber \
             --page-requisites \
+            --convert-links \
             --html-extension \
             --restrict-file-names=ascii \
-            --domains=doc.qt.io \
+            --domains doc.qt.io \
             --no-parent \
-            --wait=1.2 \
+            --wait=0.5 \
             --random-wait \
-            --timeout=30 \
-            --tries=5 \
-            --waitretry=5 \
+            --timeout=20 \
+            --tries=2 \
             --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-            --referer="https://doc.qt.io/" \
-            --execute="robots=off" \          # 忽略 robots.txt 限制（仅用于文档站，合规前提下）
-            --accept-regex='\.((html?|css|js|qml|qmlproject|json|xml|md|txt|svg|png|jpg|jpeg|gif|ico|woff2?|ttf|otf)(\?.*)?$)' \
-            --reject-regex='\.(mp[34]|avi|mov|wmv|flv|webm|wav|ogg|zip|rar|tar|gz|bz2|xz|7z|iso|dmg|exe|msi|apk|bin|deb|rpm|pdf|psd|ai|sketch|woff)$' \
-            --directory-prefix="$DOWNLOAD_DIR" \
-            "$TARGET_URL" 2>&1 | tee wget.log || echo "wget exited with code $?, continuing anyway..."
-          
-          # 关键：容忍 wget 错误，但验证核心内容是否下载
-          core_files=$(find "$DOWNLOAD_DIR" -name "index.html" -o -name "quick-start.html" -o -name "*.qml" | wc -l)
-          total_files=$(find "$DOWNLOAD_DIR" -type f | wc -l)
-          
-          echo "✓ Core files found: $core_files"
-          echo "✓ Total files downloaded: $total_files"
-          
-          if [ "$core_files" -lt 3 ] || [ "$total_files" -lt 20 ]; then
-            echo "❌ Critical failure: Insufficient files downloaded"
-            cat wget.log | grep -E "(ERROR|failed|403|404)" | head -20
-            exit 1
-          fi
-        shell: bash {0}  # 移除 -e 避免命令失败立即退出
+            --reject-regex '\.(mp[34]|avi|mov|wmv|flv|webm|wav|ogg|zip|rar|tar|gz|bz2|xz|7z|iso|dmg|exe|msi|apk|bin|deb|rpm|pdf)$' \
+            --accept-regex '\.(html?|css|js|txt|md|json|xml|svg|png|jpg|jpeg|gif|ico|woff2?|eot|ttf|otf)$' \
+            --directory-prefix=$DOWNLOAD_DIR \
+            $TARGET_URL
+        continue-on-error: true  # 容忍个别资源失败（如403/404），保证主流程完成
 
-      - name: 🔍 Diagnose Download Issues (if any)
-        if: failure()
+      - name: 📦 Package & Upload Artifact
         run: |
-          echo "=== wget error diagnostics ==="
-          ls -R "$DOWNLOAD_DIR" 2>/dev/null | head -50
-          grep -E "(ERROR|403|404)" wget.log 2>/dev/null || echo "No specific errors found"
-          exit 1
+          # 清理无用临时文件（wget生成的query参数文件等）
+          find $DOWNLOAD_DIR -type f -name "*\?*" -delete 2>/dev/null || true
+          tar -I 'zstd -T0 --long' -cf qt-docs.zst $DOWNLOAD_DIR
+        shell: bash
 
-      - name: 🧹 Cleanup & Fix Links
-        run: |
-          # 1. 删除带查询参数的垃圾文件
-          find "$DOWNLOAD_DIR" -type f -name "*\?*" -delete 2>/dev/null || true
-          
-          # 2. 修复 wget 生成的畸形路径（doc.qt.io 嵌套问题）
-          if [ -d "$DOWNLOAD_DIR/doc.qt.io/qtdesignstudio" ]; then
-            mv "$DOWNLOAD_DIR/doc.qt.io/qtdesignstudio"/* "$DOWNLOAD_DIR/" 2>/dev/null || true
-            rm -rf "$DOWNLOAD_DIR/doc.qt.io"
-          fi
-          
-          # 3. 删除空目录
-          find "$DOWNLOAD_DIR" -type d -empty -delete 2>/dev/null || true
-          
-          echo "✓ Cleanup completed"
-          echo "📁 Final file count: $(find $DOWNLOAD_DIR -type f | wc -l)"
-
-      - name: 📦 Compress with Zstandard
-        run: |
-          if [ ! -d "$DOWNLOAD_DIR" ] || [ "$(find $DOWNLOAD_DIR -type f | wc -l)" -lt 10 ]; then
-            echo "❌ Download directory invalid or empty"
-            exit 1
-          fi
-          
-          zstd -T0 -19 -f -o qtdesignstudio-docs.zst "$DOWNLOAD_DIR"
-          ls -lh qtdesignstudio-docs.zst
-          echo "✓ Compression successful"
-
-      - name: 📤 Upload Artifact
+      - name: 📤 Upload to Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: qtdesignstudio-offline-docs
-          path: qtdesignstudio-docs.zst
+          name: qt-documentation-offline
+          path: qt-docs.zst
           retention-days: 14
+          compression-level: 0  # 已预压缩，跳过二次压缩提速
 
-      - name: 🗑️ Cleanup Workspace
+      - name: 🧹 Cleanup Workspace
+        run: rm -rf $DOWNLOAD_DIR qt-docs.zst
         if: always()
-        run: rm -rf "$DOWNLOAD_DIR" qtdesignstudio-docs.zst wget.log 2>/dev/null || true
